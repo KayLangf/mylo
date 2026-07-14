@@ -91,6 +91,44 @@ See `docs/tradeoffs.md` for full reasoning. Summary:
 
 **What we'd do at scale:** Build a controlled ingestion pipeline with pinned document versioning per customer/agency (not "always fetch latest"), source authority review as a deliberate step before any document is promoted into the active knowledge base, and a way to track and reference prior versions when a form hasn't caught up to updated policy guidance. This is the same architecture proposed during the technical interview — the POC's manual process is a stand-in for that pipeline, not an argument against building it.
 
+## 12. Real-World Discovery: The FNS 360 Version Conflict
+
+While manually sourcing knowledge base documents, we found a live, unplanned example of the exact source-authority problem discussed in the technical interview — not a hypothetical, a real one.
+
+**What we found:** NC DHHS hosts an official policy manual document, "FNS 360 — Determining Benefit Levels," at a stable URL pattern on `policies.ncdhhs.gov`. Two versions exist simultaneously discoverable via search and direct link:
+
+| | Change #15-2021 | Change #01-2025 (current) |
+|---|---|---|
+| Effective date | October 1, 2021 | October 1, 2025 |
+| 200% Gross Income Limit (household of 1) | $2,148 | $2,610 |
+| 200% Gross Income Limit (household of 4) | $4,418 | $5,360 |
+| Standard deduction (household of 1) | $177 | $209 |
+| Max resource limit (elderly/disabled) | $3,750 | $4,500 |
+
+Both documents are hosted on the same official, authoritative domain. Nothing about the URL, domain, or presentation signals that one is stale — only the effective date embedded in the document content itself reveals the conflict.
+
+**How we're handling it:**
+- Both versions are included in the knowledge base as separate, fully-tagged documents (`02_fns_360_benefit_levels_2021.md` and `03_fns_360_benefit_levels_2025.md`), each carrying explicit `change_number` and `effective_date` metadata.
+- The outdated document is annotated in its own content with a clear note directing to the current version, but is **not deleted or excluded** — deliberately, so the agent's retrieval and reasoning logic can be tested against the exact kind of conflict a production system will encounter constantly.
+- The current authoritative eligibility logic (`eligibility.py`) uses only the Change #01-2025 figures.
+- One adversarial persona test is built specifically around this conflict: verifying the agent surfaces the *current* effective-dated figures and does not silently blend or average numbers from both versions.
+
+**Why this matters beyond the case study:** This is direct, first-hand evidence that the source-authority architecture discussed with Chip and Adil isn't a theoretical concern — it's a problem that exists today, in production government data, discoverable within an hour of real research. Any production ingestion pipeline for this domain needs pinned versioning and explicit effective-date awareness as a core requirement, not an edge case.
+
+## 13. Estimated Project Cost
+
+Given the ~20 hour scope, actual API/infrastructure costs are minimal:
+
+| Item | Estimated Cost |
+|---|---|
+| LLM API calls (development, testing, adversarial personas, live demo) | $5-10 |
+| Embeddings API (one-time ingestion of ~9 documents, ~60-100 chunks) | <$1 |
+| Vector database (ChromaDB, local/file-based) | $0 |
+| Hosting/infrastructure (CLI interface, no deployment) | $0 |
+| **Total estimated cost** | **$10-20** |
+
+This is comfortably within the $200 provided upfront to cover development and LLM costs. The largest cost driver is iterative testing during the adversarial persona phase (Hour 16-17), where repeated runs against edge cases consume the most tokens.
+
 ## 10. Concurrency & Session Isolation (Design Requirement, Not a Cut)
 
 Even at POC scale, session state must be correctly isolated per conversation. This is a correctness requirement, not a nice-to-have — the review meeting is live and interactive, and cross-session data leakage would be a visible, embarrassing bug if two sessions run concurrently (e.g., two terminal instances, or Chip/Adil trying it alongside a demo session).
