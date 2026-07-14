@@ -80,6 +80,16 @@ See `docs/tradeoffs.md` for full reasoning. Summary:
 - Rate limiting / abuse protection (not implemented for POC; documented as a production requirement)
 - UI-layer injection attacks (e.g., malicious input via a future web frontend) — out of scope since CLI has no attack surface beyond stdin, but relevant the moment a web UI is added
 - SMS channel support (documented as a future channel option, not built)
+- Comparative model evaluation (e.g., Claude vs. GPT-4o performance benchmarking) — a single model is selected and used; systematic model comparison is a production-stage decision, not a POC one
+- Automated document retrieval/versioning from live sources — see Section 11 below for full reasoning
+
+## 11. Tradeoff: Manual Document Curation vs. Automated Ingestion
+
+**What we're cutting:** Automated fetching, scraping, or versioning of source eligibility documents from live government websites.
+
+**Why:** The case study explicitly prohibits scraping government systems. More importantly, this mirrors a real architectural principle discussed directly with Chip and Adil in the technical interview: "most up to date" is not a safe heuristic for determining source authority. An agency's own form may lag behind a state's updated guidance, and naive automatic ingestion of "the latest" document risks pulling in information that preempts a customer's actual current process. Manual curation means a human is verifying source authority before a document enters the system — which is the correct control point, not a shortcut being taken due to time constraints.
+
+**What we'd do at scale:** Build a controlled ingestion pipeline with pinned document versioning per customer/agency (not "always fetch latest"), source authority review as a deliberate step before any document is promoted into the active knowledge base, and a way to track and reference prior versions when a form hasn't caught up to updated policy guidance. This is the same architecture proposed during the technical interview — the POC's manual process is a stand-in for that pipeline, not an argument against building it.
 
 ## 10. Concurrency & Session Isolation (Design Requirement, Not a Cut)
 
