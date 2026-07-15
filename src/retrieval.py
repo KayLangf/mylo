@@ -2,4 +2,8 @@
 most relevant chunks (with their source/section/date metadata) from
 ChromaDB for the agent to ground its responses in. Read-only and
 stateless — safe to share across concurrent sessions.
+
+Note: distances are squared L2, not cosine, despite embeddings being
+unit-normalized (so rankings match what cosine would produce, but raw
+values are ~2x cosine distance).
 """
