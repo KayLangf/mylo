@@ -35,7 +35,11 @@ def run():
             print(f"Mylo: Saved a masked transcript to {path}\n")
             continue
 
-        reply = agent.send_message(session, user_input)
+        try:
+            reply = agent.send_message(session, user_input)
+        except KeyboardInterrupt:
+            print("\nMylo: Take care.")
+            break
         print(f"Mylo: {reply}\n")
 
 

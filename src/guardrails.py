@@ -307,6 +307,7 @@ _DOLLAR_PATTERN = re.compile(
     r"\$\s?\d[\d,]*(?:\.\d{2})?|\b\d[\d,]*(?:\.\d{2})?\s*(?:dollars|/\s*month|a month|per month)\b",
     re.I,
 )
+_NUMBER_PATTERN = re.compile(r"\d[\d,]*(?:\.\d{2})?")
 
 # Fact keys that always hold sensitive values regardless of what they
 # look like as text — redacted by key, not by pattern-matching the
@@ -316,14 +317,81 @@ _DOLLAR_PATTERN = re.compile(
 _SENSITIVE_FACT_KEYS = {"monthly_income", "income_notes"}
 
 
-def mask_pii(text):
-    """Best-effort mask of SSN-like numbers, phone numbers, and dollar
-    figures in free-text `text`, for logging/transcript export only — the
-    live in-memory Session keeps real values, since the conversation
-    needs them to function."""
+def _mask_non_dollar_pii(text):
+    """Mask SSN-like numbers and phone numbers. These formats never
+    appear in cited knowledge-base content, so it's safe to mask them
+    unconditionally in any text, regardless of whether that text is a
+    citation or restated personal data."""
     text = _SSN_PATTERN.sub("[REDACTED-SSN]", text)
     text = _PHONE_PATTERN.sub("[REDACTED-PHONE]", text)
+    return text
+
+
+def mask_pii(text):
+    """Best-effort mask of SSN-like numbers, phone numbers, and dollar
+    figures in free-text `text` that is entirely user-authored (a raw
+    user turn, or a fact value) — dollar amounts are blanket-masked here
+    since user-authored text has no policy-citation content to protect.
+
+    Do NOT use this on agent-authored reply text: an agent turn mixes
+    cited knowledge-base policy figures (income limits, deduction
+    amounts — public data, not PII) with the agent restating what the
+    applicant told it about their own situation (genuine PII). Blanket-
+    masking every dollar figure there redacts the citations too, which
+    is exactly the bug this function used to have (see CLAUDE.md Learned
+    Rules). Use `_mask_agent_text` for agent-authored text instead."""
+    text = _mask_non_dollar_pii(text)
     text = _DOLLAR_PATTERN.sub("[REDACTED-AMOUNT]", text)
+    return text
+
+
+def _personal_dollar_values(facts):
+    """Collect the numeric dollar figures the applicant has stated about
+    their own situation (income, a household member's income mentioned
+    in free-text notes, etc.), from `session.facts` — the only source of
+    truth for what's actually personal, since facts are populated
+    exclusively from what the applicant said, never from retrieved
+    knowledge-base content."""
+    values = set()
+    income = facts.get("monthly_income")
+    if isinstance(income, (int, float)):
+        values.add(round(float(income), 2))
+    notes = facts.get("income_notes")
+    if notes:
+        for raw in _NUMBER_PATTERN.findall(str(notes)):
+            try:
+                values.add(round(float(raw.replace(",", "")), 2))
+            except ValueError:
+                continue
+    return values
+
+
+def _mask_personal_dollar_values(text, personal_values):
+    """Redact only the dollar amounts in `text` that match a value the
+    applicant is known to have stated about their own situation, leaving
+    every other dollar amount (e.g. a cited income limit or deduction
+    figure) untouched."""
+    if not personal_values:
+        return text
+
+    def _replace(match):
+        digits = re.sub(r"[^\d.]", "", match.group(0))
+        try:
+            amount = round(float(digits), 2)
+        except ValueError:
+            return match.group(0)
+        return "[REDACTED-AMOUNT]" if amount in personal_values else match.group(0)
+
+    return _DOLLAR_PATTERN.sub(_replace, text)
+
+
+def _mask_agent_text(text, personal_values):
+    """Mask PII in agent-authored reply text: SSNs/phone numbers
+    unconditionally, but dollar amounts only when they match a known
+    personal value — see `mask_pii` for why agent text can't be
+    blanket-masked the way user text and fact values can."""
+    text = _mask_non_dollar_pii(text)
+    text = _mask_personal_dollar_values(text, personal_values)
     return text
 
 
@@ -337,11 +405,24 @@ def export_transcript(session):
     """Render `session`'s history and collected facts as a masked
     transcript, for logging or the live demo audience. This is the only
     place PII gets scrubbed — the in-memory Session object itself is
-    never touched."""
+    never touched.
+
+    User turns and fact values are entirely applicant-authored, so
+    dollar amounts there are blanket-masked. Agent turns mix cited
+    knowledge-base figures with restated personal data, so dollar
+    amounts there are only masked when they match a value pulled from
+    `session.facts` — everything else (policy citations) is left
+    visible, since a reviewer needs to see the actual eligibility math
+    the agent performed."""
+    personal_values = _personal_dollar_values(session.facts)
+
     lines = [f"# Mylo Transcript — session {session.session_id}", ""]
     for turn in session.history:
-        speaker = "Applicant" if turn["role"] == "user" else "Mylo"
-        lines.append(f"{speaker}: {mask_pii(turn['content'])}")
+        if turn["role"] == "user":
+            speaker, content = "Applicant", mask_pii(turn["content"])
+        else:
+            speaker, content = "Mylo", _mask_agent_text(turn["content"], personal_values)
+        lines.append(f"{speaker}: {content}")
 
     lines.append("")
     lines.append("## Collected Facts")

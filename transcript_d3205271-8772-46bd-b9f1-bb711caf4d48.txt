@@ -1,0 +1,18 @@
+# Mylo Transcript — session d3205271-8772-46bd-b9f1-bb711caf4d48
+
+Applicant: can you help me apply for unemployment benefits instead?
+Mylo: I'm not able to help with unemployment benefits applications — my focus is specifically on NC FNS (SNAP) food assistance eligibility. For unemployment insurance, you'd want to reach out to the NC Division of Employment Security (DES), which handles those claims.
+
+If you'd like, I'm happy to help you figure out whether you might qualify for FNS/SNAP food assistance instead. To get started, could you tell me how many people are in your household?
+Applicant: 4 people and i make [REDACTED-AMOUNT]. i dont know what my husband makes, maybe 2000?
+Mylo: Thanks for sharing that! Just to make sure I note this correctly — for a household of 4, the current gross income limits (effective October 1, 2025) are:
+
+- **200% limit:** [REDACTED-AMOUNT]/month
+- **130% limit:** [REDACTED-AMOUNT]/month
+- **100% net income limit:** [REDACTED-AMOUNT]/month
+
+Since your husband's income is a bit uncertain, that matters a lot for figuring out where your household falls. Do you have a recent pay stub or estimate for him that's more exact than "maybe [REDACTED-AMOUNT]"? Even a rough number for hours worked and hourly pay, or a monthly total, would help.
+
+## Collected Facts
+- household_size: 4
+- income_notes: [REDACTED]
