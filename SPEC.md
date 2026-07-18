@@ -83,6 +83,22 @@ See `docs/tradeoffs.md` for full reasoning. Summary:
 - Comparative model evaluation (e.g., Claude vs. GPT-4o performance benchmarking) — a single model is selected and used; systematic model comparison is a production-stage decision, not a POC one
 - Automated document retrieval/versioning from live sources — see Section 11 below for full reasoning
 
+## 8. Development Phases (Priority)
+
+- **P0 (must ship):** Knowledge base + retrieval, conversation loop with state tracking, deterministic eligibility logic, happy-path end-to-end flow
+- **P1 (must ship):** Crisis detection, prompt injection resistance, PII handling, out-of-scope refusal
+- **P2 (should ship):** Adversarial persona test suite run + documented results
+- **P3 (nice to have, cut if short on time):** Polish on conversational tone, additional edge-case personas beyond the core set
+
+## 9. Constraints & Known Limitations
+
+- ~20 hour time budget — scope is deliberately narrow, not feature-complete
+- No real agency integration of any kind
+- Single session only — no persistence across conversations
+- Small knowledge base (~10-20 documents) — retrieval approach is intentionally simple given this scale
+- English only
+- Not a production system — a proof-of-concept demonstrating architectural judgment, guardrail thinking, failure-mode reasoning, and tradeoff reasoning
+
 ## 10. Concurrency & Session Isolation (Design Requirement, Not a Cut)
 
 Even at POC scale, session state must be correctly isolated per conversation. This is a correctness requirement, not a nice-to-have — the review meeting is live and interactive, and cross-session data leakage would be a visible, embarrassing bug if two sessions run concurrently (e.g., two terminal instances, or Chip/Adil trying it alongside a demo session).
@@ -219,18 +235,48 @@ Full before/after transcripts available in `tests/personas/` (or reference the s
 
 **Why this is worth documenting as its own case:** The failure mode is genuinely difficult to diagnose from the outside — a client-side display truncation and a server-side `max_tokens` cutoff look identical to a user (or a developer glancing at printed output). The only way to tell them apart is inspecting `stop_reason` and `usage` directly on the response object. This is now a standing rule for any future debugging of "response looks cut short" symptoms (see CLAUDE.md Learned Rules).
 
-## 8. Development Phases (Priority)
+## 17. Architectural Fix: Retrieval Query Scoping (Context-Blind Short Answers)
 
-- **P0 (must ship):** Knowledge base + retrieval, conversation loop with state tracking, deterministic eligibility logic, happy-path end-to-end flow
-- **P1 (must ship):** Crisis detection, prompt injection resistance, PII handling, out-of-scope refusal
-- **P2 (should ship):** Adversarial persona test suite run + documented results
-- **P3 (nice to have, cut if short on time):** Polish on conversational tone, additional edge-case personas beyond the core set
+**Discovered while investigating an inconsistency:** the same category of question (household-of-2 income limits) got two different confidence postures across two separate conversations — one confidently cited exact figures, the other said it didn't have the income limits table available. Initial hypothesis was a retrieval-phrasing sensitivity issue; a 5-query diagnostic against varied phrasings of "what are the income limits" all reliably retrieved the correct FNS 360 (2025) chunk, ruling that out.
 
-## 9. Constraints & Known Limitations
+**Actual root cause, confirmed via direct instrumentation:** `retrieval.retrieve()` was called using only the literal, verbatim current-turn `user_input` as the query — with no conversation history or accumulated facts folded in. This works fine when a turn's literal text carries real semantic content (e.g., "2200" retrieves income-adjacent chunks reasonably). It fails completely when a turn's literal text is short and context-dependent — e.g., a bare "no" answering "are you receiving other benefits?" carries zero semantic signal about income limits, so nothing income-related surfaces in retrieval for that turn, regardless of how relevant income limits are to the actual conversation at that point.
 
-- ~20 hour time budget — scope is deliberately narrow, not feature-complete
-- No real agency integration of any kind
-- Single session only — no persistence across conversations
-- Small knowledge base (~10-20 documents) — retrieval approach is intentionally simple given this scale
-- English only
-- Not a production system — a proof-of-concept demonstrating architectural judgment, guardrail thinking, failure-mode reasoning, and tradeoff reasoning
+**Confirmed via reproduction:** the exact 4-turn sequence (household size → income → correction → "no") was replayed with retrieval logging enabled. Turn 4's query was literally the string `"no"`. Its top-5 retrieved chunks were Contact info, Public Charge policy, an index of unincluded sections, language-assistance info, and Hearings — nothing about income limits. The model's groundedness instruction then correctly triggered ("I don't have that information"), because the information genuinely wasn't in its context for that call — this was the guardrail working exactly as designed, exposing a gap in the *retrieval* layer, not a flaw in the *generation* layer's honesty.
+
+**Why this matters more than an isolated inconsistency:** any turn where the user's literal reply is short and context-dependent (yes/no answers, corrections, bare numbers) is at risk of retrieving irrelevant chunks and then honestly — but unhelpfully — declining to answer, even when the knowledge base clearly covers the topic and would have been retrieved under different phrasing. This directly affects the case study's Requirement 2 (grounding in retrieved knowledge) and Requirement 4 (tracking conversation state) — state was being tracked correctly in `session.facts`, but that state wasn't being used to inform *retrieval*, only fact extraction.
+
+**Options considered:**
+1. **LLM-based query reformulation** before each retrieval call — the "proper" production pattern, but adds a new model call per turn (latency, cost, and a new failure surface if the rewrite itself is poor). Rejected for this scope.
+2. **Persist retrieved evidence across turns** rather than re-retrieving fresh every turn — avoids losing earlier-turn context, but risks accumulating stale or irrelevant evidence into the context window over a long conversation.
+3. **Concatenate recent conversation turns into the retrieval query** (without adding any new model call) — cheap, deterministic, and directly targets the demonstrated failure.
+
+**Decision: Option 3.** The retrieval query for a given turn is now built from the last 2-3 turns of conversation (e.g., recent facts and exchanges strung together) rather than the literal current-turn text alone. This is a change to the *retrieval-time input* only — it does not add tokens to the *generation-time* context window, does not add a new LLM call, and does not relax the groundedness discipline that correctly refuses to state ungrounded information. It simply gives retrieval enough topical signal to find genuinely relevant chunks even when the current turn's literal text (e.g., "no") doesn't carry that signal on its own.
+
+**Why not the more sophisticated options, given the tradeoff being asked about explicitly:** the concern raised before choosing this fix was that adding more context risks hallucination, while too little context risks exactly this failure. The resolution is that these are two different context budgets that don't have to trade off against each other — the retrieval-query context (cheap, deterministic, doesn't reach the model) can be made richer without touching the generation-time context (the disciplined, citation-driven, groundedness-protected part). Conflating the two would create a real tradeoff; keeping them separate does not.
+
+**What we'd do at scale:** proper query reformulation (Option 1) becomes worth the added latency/cost once conversation complexity grows beyond what simple turn-concatenation can handle well — e.g., very long conversations, or ones with many topic shifts where "last 2-3 turns" stops being a reliable proxy for "what this turn is actually about."
+
+### 17.1 Follow-On Investigation: Dilution from Verbose Turns, and a Confirmed Remaining Gap
+
+After the initial fix above, a related but distinct symptom appeared: the same category of question (household-of-4 income limits) missed retrieval entirely in a conversation where a long, topically-broad assistant reply (an appeals/denial-process explanation) sat between the relevant facts and the current turn. This looked similar to the original bug but had a different mechanism, confirmed via ablation testing rather than assumed.
+
+**Ablation testing across four query-construction variants**, using two real reproducing scenarios (the original short-answer case, and the new verbose-tangent case):
+
+| Variant | Scenario 1 (short answer) | Scenario 2 (verbose tangent) |
+|---|---|---|
+| (a) Bare current turn only | MISS | HIT (borderline, rank 3-5) |
+| (b) Full recent-history concatenation (the Section 17 fix as originally built) | HIT | MISS |
+| (c) `session.facts` + current turn only, no raw history | HIT | MISS (counterfactual — facts for the current turn don't exist yet at retrieval time) |
+| (d) `session.facts` + last assistant turn + current turn | HIT | MISS (last assistant turn was itself the long, off-topic tangent) |
+
+**No single query-construction formula won both scenarios.** This was a genuine, evidence-backed finding, not a failure to find the right formula — Scenario 1 needs *more* context folded in (a bare short answer has no signal on its own), while Scenario 2 needs *less* dilution from a single long, off-topic turn. These pull in different directions for any fixed concatenation approach.
+
+**Resolution: widen `top_k` from 5 to 8, keep the Section 17 query construction unchanged.** Rather than continuing to search for the perfect query-construction formula, the retrieval window itself was widened. Testing confirmed the previously-missing target chunk in Scenario 2 was not absent from the embedding space — it was present but ranked just outside a 5-wide window (rank 7). At `top_k=8`, it's captured cleanly, with zero irrelevant noise in the surrounding results (every other chunk in the widened window was genuinely adjacent SNAP/FNS content, not off-topic filler). `top_k=10` added nothing beyond `top_k=8` for the cases tested, so 8 was chosen as sufficient rather than over-widening the window unnecessarily. Confirmed separately that all 8 retrieved chunks are forwarded into `<retrieved_evidence>` (no downstream truncation step existed that would have silently capped this at fewer chunks).
+
+**Comprehensive fresh-conversation regression testing** (5 scenarios, all run live, not replayed query strings) confirmed the `top_k=8` fix resolves the original bug, the dilution-risk case, a 4-turn consecutive-short-answer stress test, and a single verbose multi-fact user turn — all four scenarios correctly retrieved and cited exact, source-verified figures with zero hallucination.
+
+**One genuine, confirmed, unresolved gap: topic-shift retrieval dilution.** A follow-up question on a *different* topic than the preceding several turns (e.g., asking about deductions after multiple turns of income-limit discussion) can still fail to retrieve relevant content, because accumulated same-topic history dominates the query's embedding even at `top_k=8`. Tested a cheap mitigation — weighting the current turn's text more heavily by repeating it in the query — which did not close this gap on retest; deduction-related content still failed to surface. **Critically, the agent's groundedness discipline held up correctly under this failure both times it was tested**: rather than fabricating deduction figures, it explicitly stated it didn't have the exact amounts on hand. This is the guardrail working as designed on a retrieval-layer gap, exactly as intended.
+
+**Decision: document as a known limitation rather than pursue further fixes.** This required two separate fix attempts (widening `top_k`, then current-turn weighting) and confirmed reproduction before being accepted as a genuine architectural limitation rather than an unexplored option. Given the ~20 hour scope, a third fix attempt (e.g., topic-aware query segmentation, or detecting topic shifts explicitly) was judged not worth pursuing further — the system fails safely (honest "I don't have that" rather than fabrication) even when this gap is hit, which is the more important property to have preserved.
+
+**What we'd do at scale:** detect topic shifts explicitly (e.g., classify whether the current turn's topic matches the dominant topic of recent history) and either re-weight or reset the retrieval query context when a shift is detected, rather than always concatenating recent turns uniformly regardless of topical continuity.

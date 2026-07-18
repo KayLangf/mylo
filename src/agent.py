@@ -9,6 +9,7 @@ import uuid
 import anthropic
 from dotenv import load_dotenv
 
+import guardrails
 import retrieval
 
 MODEL = "claude-sonnet-5"
@@ -17,6 +18,13 @@ MODEL = "claude-sonnet-5"
 # reply text, so a low cap truncates the answer mid-sentence well before
 # it looks close to a token limit. Verified via response.usage.thinking_tokens.
 MAX_TOKENS = 4096
+
+# Number of most recent conversational exchanges (user+assistant pairs)
+# folded into the retrieval query alongside the current turn. See
+# SPEC.md Section 17: a bare current-turn reply like "no" carries no
+# semantic signal about the topic under discussion, so retrieval needs
+# recent context to find genuinely relevant chunks.
+RETRIEVAL_CONTEXT_TURNS = 3
 
 SYSTEM_PROMPT = """You are Mylo, a conversational assistant that helps North \
 Carolina residents understand whether they are likely eligible for NC FNS \
@@ -134,6 +142,35 @@ def _format_facts(facts):
     return "\n".join(f"- {key}: {value}" for key, value in facts.items())
 
 
+def _build_retrieval_query(session, user_input):
+    """Build the retrieval query from the last few turns of conversation
+    and known facts, instead of the bare current-turn text alone. A
+    short, context-dependent reply ("no", a bare number, a correction)
+    carries no topical signal by itself — folding in recent history and
+    session.facts gives retrieval enough context to find genuinely
+    relevant chunks even then.
+
+    This only changes the string embedded for retrieval (SPEC.md Section
+    17, Option 3) — it adds no new LLM call and does not touch what gets
+    sent to the generation-time API call, so it doesn't grow the
+    generation-time context window or relax groundedness discipline
+    there. `session.history` entries are always plain strings (never the
+    tagged turn_content), so this reads real conversational text, not
+    retrieval/system-prompt scaffolding.
+
+    `user_input` is included twice (once implicitly via its normal
+    trailing position, once more explicitly appended) so the current
+    turn carries roughly double weight relative to any single older
+    turn in the concatenation — a cheap mitigation for cases where a
+    topic-shift follow-up (e.g. a new question about deductions after
+    several turns of income-limit discussion) would otherwise be
+    outweighed by the accumulated older content."""
+    recent_turns = [turn["content"] for turn in session.history[-2 * RETRIEVAL_CONTEXT_TURNS :]]
+    facts_summary = "; ".join(f"{key}: {value}" for key, value in session.facts.items())
+    parts = recent_turns + ([facts_summary] if facts_summary else []) + [user_input, user_input]
+    return "\n".join(parts)
+
+
 def _build_turn_content(user_input, chunks, facts):
     return (
         f"<retrieved_evidence>\n{_format_evidence(chunks)}\n</retrieved_evidence>\n\n"
@@ -165,13 +202,20 @@ def _build_tool_results(tool_uses):
 
 
 def send_message(session, user_input, top_k=retrieval.DEFAULT_TOP_K):
-    """Take one turn of user input for `session`: retrieve grounding
-    context, call the LLM, update session state with any new facts
-    learned, and return the agent's reply text."""
+    """Take one turn of user input for `session`: screen it against
+    guardrails, retrieve grounding context, call the LLM, update session
+    state with any new facts learned, and return the agent's reply text."""
+    guard_result = guardrails.screen(user_input)
+    if guard_result is not None:
+        session.history.append({"role": "user", "content": user_input})
+        session.history.append({"role": "assistant", "content": guard_result.response})
+        return guard_result.response
+
     load_dotenv()
     client = anthropic.Anthropic()
 
-    chunks = retrieval.retrieve(user_input, top_k=top_k)
+    retrieval_query = _build_retrieval_query(session, user_input)
+    chunks = retrieval.retrieve(retrieval_query, top_k=top_k)
     turn_content = _build_turn_content(user_input, chunks, session.facts)
     api_messages = session.history + [{"role": "user", "content": turn_content}]
 

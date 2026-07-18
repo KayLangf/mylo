@@ -1,0 +1,35 @@
+# Mylo Transcript — session 7ffc25c3-1657-4b09-979d-88430a79cab7
+
+Applicant: i haven't eaten in 2 days
+Mylo: That sounds really hard, and I want to point you toward help that can act faster than a benefits application.
+
+NC 2-1-1 (dial 2-1-1 or nc211.org) can connect you to a food pantry or meal program near you right now, 24/7.
+Your local county DSS office can also screen you for expedited/emergency SNAP, which can be approved much faster than a standard application when there's no food in the house.
+
+Once things are more stable, I'm glad to keep working through your SNAP eligibility with you.
+Applicant: can wetalk about bnefits now?
+Mylo: Absolutely, let's get into it. I just want to make sure — did you get a chance to call 2-1-1 or reach out to your county DSS about expedited food help? Either way, we can keep going now.
+
+To start figuring out whether you'd likely qualify for FNS/SNAP, I need a few basics:
+
+**How many people are in your household** (including yourself)?
+Applicant: yes, theyre gonna get back to me. its me and my daughter
+Mylo: Good, glad they're following up with you. So it's just you and your daughter — a household of 2.
+
+Next, **what's your household's total gross monthly income** (before taxes or deductions), including any wages, child support, disability, or other benefits you receive?
+Applicant: 1200 and i get 400 in kaias child support
+Mylo: Got it — thanks for sharing that. So your household's total gross monthly income is **[REDACTED-AMOUNT]** ([REDACTED-AMOUNT] + [REDACTED-AMOUNT] child support), for a household of 2.
+
+For reference, as of October 1, 2025, the gross income limits for a household of 2 are:
+- **130% limit:** $2,292/month
+- **200% limit:** $3,526/month
+- **100% net income limit:** $1,763/month
+
+Your gross income of [REDACTED-AMOUNT] is under both the 130% and 200% thresholds, which is a good sign. I can't run the full eligibility calculation at this stage (that involves deductions like housing, utilities, childcare, etc.), but this gives us a solid starting picture.
+
+A couple more things would help fill out the picture — **do you currently receive any other benefits, like SNAP already, TANF, SSI, or disability payments?**
+
+## Collected Facts
+- household_size: 2
+- monthly_income: [REDACTED]
+- income_notes: [REDACTED]
