@@ -69,7 +69,9 @@ See `SPEC.md` Section 2 for full reasoning behind each choice.
 
 **Retrieval blind to conversation context on short answers.** The same category of question (household income limits) got inconsistent confidence across two conversations — one cited exact figures, one said it didn't have the table. Root cause: retrieval queried using only the literal current-turn text, with no conversation history folded in. A bare "no" (answering "any other benefits?") carries zero semantic signal about income limits, so nothing relevant was retrieved for that turn — the model then correctly (and honestly) said it lacked the information, exposing a retrieval-layer gap rather than a generation-layer inconsistency. Fixed by building the retrieval query from the last 2-3 turns of conversation instead of the bare current turn, without adding any new model call or growing the generation-time context window — a cheap, deterministic fix that keeps retrieval-time and generation-time context budgets separate.
 
-Full detail: `SPEC.md` Section 14, Section 17, `CLAUDE.md` Learned Rules.
+**Follow-on investigation: verbose-turn dilution, resolved by widening retrieval — plus one honestly-documented remaining gap.** A related symptom surfaced after the fix above: a long, off-topic assistant tangent sitting in recent history could dilute retrieval and cause a miss. Ablation-tested four different query-construction strategies across real reproducing scenarios — no single formula won every case, so instead of continuing to chase the perfect query construction, widened the retrieval window (`top_k` 5→8). This resolved every scenario tested across five fresh, live conversations, except one: a genuine topic shift (e.g., asking about deductions after several turns discussing income limits) can still miss retrieval, because accumulated same-topic history outweighs a short, on-topic current turn. Two separate fix attempts didn't close this gap. It's documented as a known limitation rather than force-fixed under time pressure — and importantly, the groundedness guardrail held up correctly under this failure every time it was tested: the agent stated it didn't have the information rather than fabricating an answer.
+
+Full detail: `SPEC.md` Section 14, Section 17 (including 17.1), `CLAUDE.md` Learned Rules.
 
 ## The First Adversarial Test: Household Composition Gap
 
@@ -113,6 +115,7 @@ Full reasoning for each in `SPEC.md` Sections 7 and 11. Summary:
 - Source-native Spanish-language knowledge base
 - Rate limiting for a real deployed endpoint
 - Expand knowledge base coverage — FNS 210 (Household Composition) and FNS 700 (Hearings/Appeals) are both real, confirmed gaps surfaced during testing, not hypothetical ones
+- **Explicit topic-shift detection for retrieval.** A confirmed, reproduced limitation: a genuine topic shift mid-conversation (e.g., asking about deductions after several turns discussing income limits) can still miss retrieval, because accumulated same-topic history outweighs a short, on-topic current turn in the concatenated query. Two fix attempts (widening `top_k`, weighting the current turn) didn't close this. The right production fix is detecting topic shifts explicitly and re-weighting or resetting retrieval context when one occurs, rather than always treating recent history uniformly. Importantly, the system fails safely here — groundedness held up correctly every time this was tested, with the agent honestly declining to fabricate figures it didn't have.
 
 ## Project Structure
 

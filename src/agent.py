@@ -156,10 +156,18 @@ def _build_retrieval_query(session, user_input):
     generation-time context window or relax groundedness discipline
     there. `session.history` entries are always plain strings (never the
     tagged turn_content), so this reads real conversational text, not
-    retrieval/system-prompt scaffolding."""
+    retrieval/system-prompt scaffolding.
+
+    `user_input` is included twice (once implicitly via its normal
+    trailing position, once more explicitly appended) so the current
+    turn carries roughly double weight relative to any single older
+    turn in the concatenation — a cheap mitigation for cases where a
+    topic-shift follow-up (e.g. a new question about deductions after
+    several turns of income-limit discussion) would otherwise be
+    outweighed by the accumulated older content."""
     recent_turns = [turn["content"] for turn in session.history[-2 * RETRIEVAL_CONTEXT_TURNS :]]
     facts_summary = "; ".join(f"{key}: {value}" for key, value in session.facts.items())
-    parts = recent_turns + ([facts_summary] if facts_summary else []) + [user_input]
+    parts = recent_turns + ([facts_summary] if facts_summary else []) + [user_input, user_input]
     return "\n".join(parts)
 
 

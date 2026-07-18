@@ -21,7 +21,15 @@ from dotenv import load_dotenv
 CHROMA_DIR = Path(__file__).resolve().parent.parent / "data" / "chroma_db"
 COLLECTION_NAME = "mylo_kb"
 EMBEDDING_MODEL = "text-embedding-3-small"
-DEFAULT_TOP_K = 5
+# 8 rather than 5: SPEC.md Section 17's retrieval-context-scoping fix folds
+# recent history into the query, but the relevant chunk can still land
+# just outside a 5-wide window on borderline/diluted queries (confirmed
+# via direct measurement: a reproduced miss at top_k=5 surfaced the
+# target at rank 7 once top_k was widened). The surrounding fill-in
+# chunks at ranks 6-8 were confirmed to be genuinely SNAP/FNS-relevant
+# content, not noise, so widening does not trade retrieval precision for
+# irrelevant filler.
+DEFAULT_TOP_K = 8
 
 _collection = None
 _collection_lock = threading.Lock()
