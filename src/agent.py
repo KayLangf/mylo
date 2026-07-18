@@ -9,6 +9,7 @@ import uuid
 import anthropic
 from dotenv import load_dotenv
 
+import guardrails
 import retrieval
 
 MODEL = "claude-sonnet-5"
@@ -165,9 +166,15 @@ def _build_tool_results(tool_uses):
 
 
 def send_message(session, user_input, top_k=retrieval.DEFAULT_TOP_K):
-    """Take one turn of user input for `session`: retrieve grounding
-    context, call the LLM, update session state with any new facts
-    learned, and return the agent's reply text."""
+    """Take one turn of user input for `session`: screen it against
+    guardrails, retrieve grounding context, call the LLM, update session
+    state with any new facts learned, and return the agent's reply text."""
+    guard_result = guardrails.screen(user_input)
+    if guard_result is not None:
+        session.history.append({"role": "user", "content": user_input})
+        session.history.append({"role": "assistant", "content": guard_result.response})
+        return guard_result.response
+
     load_dotenv()
     client = anthropic.Anthropic()
 
