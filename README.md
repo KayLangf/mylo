@@ -59,7 +59,7 @@ See `SPEC.md` Section 2 for full reasoning behind each choice.
 - **Session isolation is architectural, not assumed.** Conversation state is scoped per-session object, never global. This was explicitly tested under real concurrency (two simultaneous live sessions), not just designed and hoped for.
 - **Prompt injection resistance via structural tagging.** `<retrieved_evidence>` and `<user_message>` explicitly frame both as data to reason over, not instructions to follow.
 
-## Three Real Bugs Found Through Adversarial Testing
+## Four Real Bugs Found Through Adversarial Testing
 
 **Concurrency race in ChromaDB client creation.** Testing two simultaneous sessions for the first time surfaced a crash — ChromaDB's `PersistentClient` isn't thread-safe on first instantiation against a shared on-disk path. Fixed with double-checked locking so the client handle is created once and safely reused (a shared *read-only* resource, which doesn't conflict with the session-isolation rule for conversation state).
 
@@ -67,7 +67,9 @@ See `SPEC.md` Section 2 for full reasoning behind each choice.
 
 **Silent truncation from token budget, not display.** Multi-part responses were occasionally cutting off mid-sentence — visually identical to a client-side display bug. The actual cause: over half the token budget (`response.usage.thinking_tokens`) was being consumed by internal reasoning before any visible reply was generated, and `max_tokens` was capped too low to leave room for the full answer. Fixed by raising the cap; the two failure modes (display truncation vs. token-budget truncation) are indistinguishable without inspecting the raw response object directly.
 
-Full detail: `SPEC.md` Section 14, `CLAUDE.md` Learned Rules.
+**Retrieval blind to conversation context on short answers.** The same category of question (household income limits) got inconsistent confidence across two conversations — one cited exact figures, one said it didn't have the table. Root cause: retrieval queried using only the literal current-turn text, with no conversation history folded in. A bare "no" (answering "any other benefits?") carries zero semantic signal about income limits, so nothing relevant was retrieved for that turn — the model then correctly (and honestly) said it lacked the information, exposing a retrieval-layer gap rather than a generation-layer inconsistency. Fixed by building the retrieval query from the last 2-3 turns of conversation instead of the bare current turn, without adding any new model call or growing the generation-time context window — a cheap, deterministic fix that keeps retrieval-time and generation-time context budgets separate.
+
+Full detail: `SPEC.md` Section 14, Section 17, `CLAUDE.md` Learned Rules.
 
 ## The First Adversarial Test: Household Composition Gap
 
