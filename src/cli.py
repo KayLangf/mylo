@@ -10,6 +10,28 @@ GREETING = (
     "qualify for NC FNS (SNAP) food assistance. What would you like help with today?"
 )
 
+# SPEC.md Section 21: a narrow guard against a single abnormally large
+# input independently threatening the token budget (distinct from the
+# prompt-growth-driven max_tokens exhaustion in CLAUDE.md Learned Rules).
+# Enforced here, at the CLI layer, before input ever reaches the agent.
+# Exactly MAX_INPUT_CHARS characters passes (the cap is a maximum, not an
+# exclusive bound) — only strictly more is rejected.
+MAX_INPUT_CHARS = 2000
+
+
+def _check_input_length(user_input):
+    """Return a rejection message if `user_input` exceeds the character
+    cap, or None if it's within bounds. A pure function of the input
+    string alone — no shared or module-level state, so there's nothing
+    here that could leak between sessions or calls."""
+    length = len(user_input)
+    if length <= MAX_INPUT_CHARS:
+        return None
+    return (
+        f"Your message is too long ({length}/{MAX_INPUT_CHARS} characters) "
+        "— please shorten it and try again."
+    )
+
 
 def run():
     session = agent.Session()
@@ -25,6 +47,12 @@ def run():
 
         if not user_input:
             continue
+
+        length_error = _check_input_length(user_input)
+        if length_error is not None:
+            print(f"Mylo: {length_error}\n")
+            continue
+
         if user_input.lower() in ("exit", "quit"):
             print("Mylo: Take care.")
             break

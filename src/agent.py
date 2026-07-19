@@ -14,11 +14,15 @@ import guardrails
 import retrieval
 
 MODEL = "claude-sonnet-5"
-# 4096 rather than something tighter: on nuanced multi-part questions this
-# model can spend 500+ tokens on internal reasoning before any visible
-# reply text, so a low cap truncates the answer mid-sentence well before
-# it looks close to a token limit. Verified via response.usage.thinking_tokens.
-MAX_TOKENS = 4096
+# Raised 1024->4096->8192 over two rounds of system prompt growth (see
+# CLAUDE.md Learned Rules): on nuanced multi-part questions this model can
+# spend thousands of tokens on internal reasoning before any visible reply
+# text, so a cap sized for today's prompt keeps getting exhausted as the
+# prompt grows — 4096 was seen consuming 4094 thinking_tokens with zero
+# visible output (stop_reason="max_tokens", no text block at all), strictly
+# worse than the original truncated-text failure. 8192 is sized for margin
+# against a third round of prompt expansion, not just today's reproduction.
+MAX_TOKENS = 8192
 
 # Number of most recent conversational exchanges (user+assistant pairs)
 # folded into the retrieval query alongside the current turn. See
@@ -275,6 +279,63 @@ def _apply_tool_calls(session, response):
     return tool_uses
 
 
+BRIEF_REASONING_NUDGE = (
+    "\n\nKeep your internal reasoning brief for this response — prioritize "
+    "reaching a visible answer within the token budget."
+)
+
+FALLBACK_RESPONSE = (
+    "I'm having trouble forming a complete response to that — could you "
+    "try rephrasing your question, or breaking it into a couple of smaller "
+    "questions?"
+)
+
+
+def _is_reasoning_exhausted(response, reply_text):
+    """True when a call stopped purely because it ran out of budget on
+    internal reasoning — max_tokens hit, no tool call made, no visible
+    text produced. Distinct from the tool_use-with-no-text case, which is
+    an expected mid-turn state, not a failure: here the model never even
+    got to act, so there's nothing for the normal tool-result continuation
+    to build on."""
+    return (
+        response.stop_reason == "max_tokens"
+        and not any(block.type == "tool_use" for block in response.content)
+        and not reply_text
+    )
+
+
+def _call_and_resolve_tool_use(client, api_messages, system_prompt, session):
+    """Call the model once; if it stops on a tool call before producing
+    any visible text, apply the tool call to session state and make one
+    follow-up call with the tool result so the turn actually completes.
+    Returns (response, reply_text) for whichever call ended up being the
+    last one made."""
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        system=system_prompt,
+        tools=[UPDATE_FACTS_TOOL],
+        messages=api_messages,
+    )
+    tool_uses = _apply_tool_calls(session, response)
+    reply_text = _extract_text(response)
+
+    if response.stop_reason == "tool_use" and not reply_text:
+        api_messages.append({"role": "assistant", "content": response.content})
+        api_messages.append({"role": "user", "content": _build_tool_results(session, tool_uses)})
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=system_prompt,
+            tools=[UPDATE_FACTS_TOOL],
+            messages=api_messages,
+        )
+        reply_text = _extract_text(response)
+
+    return response, reply_text
+
+
 def _build_tool_results(session, tool_uses):
     """Build tool_result blocks for `tool_uses`. For update_applicant_facts,
     the result content includes the eligibility screening recomputed from
@@ -315,27 +376,26 @@ def send_message(session, user_input, top_k=retrieval.DEFAULT_TOP_K):
     turn_content = _build_turn_content(user_input, chunks, session.facts)
     api_messages = session.history + [{"role": "user", "content": turn_content}]
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        tools=[UPDATE_FACTS_TOOL],
-        messages=api_messages,
-    )
-    tool_uses = _apply_tool_calls(session, response)
-    reply_text = _extract_text(response)
+    response, reply_text = _call_and_resolve_tool_use(client, api_messages, SYSTEM_PROMPT, session)
 
-    if response.stop_reason == "tool_use" and not reply_text:
-        api_messages.append({"role": "assistant", "content": response.content})
-        api_messages.append({"role": "user", "content": _build_tool_results(session, tool_uses)})
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            tools=[UPDATE_FACTS_TOOL],
-            messages=api_messages,
+    if _is_reasoning_exhausted(response, reply_text):
+        response, reply_text = _call_and_resolve_tool_use(
+            client, api_messages, SYSTEM_PROMPT + BRIEF_REASONING_NUDGE, session
         )
-        reply_text = _extract_text(response)
+
+    # Unconditional final backstop, independent of *why* reply_text might
+    # still be empty here. _is_reasoning_exhausted() above only detects one
+    # specific signature (max_tokens, no tool call, no text) on the first
+    # call — but _call_and_resolve_tool_use()'s own internal tool-result
+    # continuation call (on either the original or the nudged-retry attempt)
+    # can independently come back empty for the same underlying reason and
+    # go undetected by that signature-specific check. Signature-specific
+    # detection is what triggers the *smart* recovery (the nudged retry);
+    # this is the *dumb* one that guarantees an empty string never reaches
+    # the user regardless of which call produced it, including causes not
+    # yet discovered.
+    if not reply_text:
+        reply_text = FALLBACK_RESPONSE
 
     session.history.append({"role": "user", "content": user_input})
     session.history.append({"role": "assistant", "content": reply_text})
