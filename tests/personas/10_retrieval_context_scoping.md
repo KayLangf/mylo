@@ -96,6 +96,35 @@ correctly across all 4 turns (`household_size=2`, `monthly_income=2200`,
 one clarifying question per turn — confirming the fix only changed
 retrieval relevance, not generation-time behavior.
 
+**Updated baseline (post `eligibility.py` wiring):** re-running this same
+4-turn script fresh after `12_deterministic_eligibility_screening.md`'s
+`<eligibility_screening>` block was wired in, Turn 4's reply now cites
+only the 200%/130% gross limit figures ($3,526 / $2,292, both correct)
+and no longer volunteers the 100%/net-income figure ($1,763) the original
+run above included. The retrieved chunk (and therefore the underlying
+retrieval fix this test validates) is unaffected — the household-of-2
+income-limit chunk still retrieves correctly. This is the new expected
+baseline going forward, not a regression: the 100% net figure was never
+used in an actual calculation before (net income requires deductions this
+project doesn't model — see `eligibility.py`'s scope note), so citing it
+was informational color, not a determination. The model now anchors on
+the deterministic, code-computed 200%/130% screening result instead of
+also surfacing an uncomputed net figure from the retrieved table — a more
+consistent citation source, not a loss of correctness.
+
+**Baseline correction — Turn 4's behavior is conditional, not fixed (found during Persona 02/10 re-verification investigation):** Turn 3's closing question is **model-generated, not part of the scripted test input** — the script only fixes the four user turns (`"2"`, `"2000"`, `"sorry i meant 2200"`, `"no"`); what the agent asks at the end of Turn 3, which Turn 4's `"no"` is actually answering, varies from run to run. Prior versions of this doc described Turn 4 as leading with clarification (a side effect of the Persona 03 ambiguity-priority fix generalizing here) as if that were a single, fixed outcome. It isn't. A fresh 4-sample re-verification found Turn 3's actual question split 2/4 compound and 2/4 single-focus, and Turn 4's behavior tracked this exactly:
+
+| Run | Turn 3's actual closing question | Genuinely compound? | Turn 4 behavior |
+|---|---|---|---|
+| 1 | "Would you like to know more about how to apply, or is there anything else about your situation you'd like to check?" | No — single-focus | Proceeds directly, no clarification, conversation closes normally |
+| 2 | "Do you currently receive FNS/SNAP or any other benefits, **or** is this a new application you're considering?" | **Yes** — structurally the same "X, and Y, or Z" shape as Persona 03's rent/utilities question | Leads with clarification, offers the two specific interpretations tied to the two parts of the question |
+| 3 | "Anything else you'd like to check — deductions, resource limits, or something else about your household?" | No — single-focus | Proceeds directly to a screening recap, no clarification |
+| 4 | "Do you currently receive FNS/SNAP or any other benefits, **or** is this a new application?" | **Yes** | Leads with clarification, offers the two specific interpretations |
+
+**Corrected baseline (conditional, replacing the prior fixed-outcome framing):** if Turn 3's closing question is genuinely compound (asks about two distinguishable things the way Persona 03's question does), Turn 4 should lead with clarification, offering the specific likely interpretations — this is the ambiguity-priority instruction working correctly, not a regression. If Turn 3's closing question is single-focus, Turn 4 should proceed directly to the screening figures without unnecessary clarification-seeking. **Both are correct behavior; neither is "the" expected result on its own** — what Turn 4 does is a correct function of what Turn 3 actually asked, not a fixed property of this test script.
+
+**Why the earlier "4/4 clarification" reading looked like a regression but wasn't:** a pre-push regression pass ran this same 4-turn script 4 times and found all 4 runs leading with clarification, which read as strong evidence the Persona 03 fix was over-triggering on Persona 10's scenario. In hindsight, this was very likely an artifact of Turn 3 happening to ask the compound benefits-or-new-application question in all 4 of those specific runs by chance (a plausible and natural thing for the model to ask at that point in intake, given `household_size`/`monthly_income` are already known but `current_benefits_status` isn't) — not evidence that the fix was firing on non-ambiguous input. The re-verification sample, by chance, included both question shapes and revealed the true conditional structure underneath.
+
 ## Why This Test Matters
 
 This is the direct regression test for the root cause documented in
