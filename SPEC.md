@@ -280,3 +280,44 @@ After the initial fix above, a related but distinct symptom appeared: the same c
 **Decision: document as a known limitation rather than pursue further fixes.** This required two separate fix attempts (widening `top_k`, then current-turn weighting) and confirmed reproduction before being accepted as a genuine architectural limitation rather than an unexplored option. Given the ~20 hour scope, a third fix attempt (e.g., topic-aware query segmentation, or detecting topic shifts explicitly) was judged not worth pursuing further — the system fails safely (honest "I don't have that" rather than fabrication) even when this gap is hit, which is the more important property to have preserved.
 
 **What we'd do at scale:** detect topic shifts explicitly (e.g., classify whether the current turn's topic matches the dominant topic of recent history) and either re-weight or reset the retrieval query context when a shift is detected, rather than always concatenating recent turns uniformly regardless of topical continuity.
+
+## 18. Deterministic Eligibility Screening
+
+Built `src/eligibility.py` per the case study's explicit Requirement 3 ("use tools/structured logic instead of hand-waving the rules"). Two functions, both plain deterministic Python, no LLM involvement:
+
+- `screen_gross_income(household_size, gross_monthly_income)` — screens against the 200% and 130% gross income limits, sourced from a single table at the top of the file citing `03_fns_360_benefit_levels_2025.md` (Change #01-2025, effective October 1, 2025)
+- `get_standard_deduction(household_size)` — exposes the standard deduction lookup from the same source table
+
+**Deliberately scoped to gross income only, not net income.** Net income calculation requires deduction data (shelter, medical, dependent care) that isn't reliably gathered — Section 17.1 already documented a confirmed retrieval limitation specifically around deduction-related follow-up questions. Building calculation logic on top of unreliably-collected data would produce confident wrong numbers, which is worse than the honest partial screening this provides instead.
+
+**No final yes/no verdict.** The function reports where a household falls relative to the gross thresholds; it does not determine eligibility. This matches language the agent already used correctly across multiple tested conversations ("I can't run the full eligibility calculation at this stage, but this gives a general sense of where things stand") — the function makes that existing honest framing more precise, not more confident than it should be.
+
+**Boundary case decision:** income exactly at a limit counts as passing (inclusive), based on `06_change_of_circumstance_reporting.md`'s "income exceeding the limit" language — the limit is a ceiling you must go past to fail, not a threshold you must stay strictly under.
+
+**Verification:** 36 unit test assertions covering every 2025 table row (household sizes 1-8), the "each additional member" formula, standard deductions, and invalid-input rejection. Boundary cases (at-limit, $1-over, $1-under on both thresholds) explicitly tested. Live end-to-end conversations confirmed the agent's cited figures match the function's output exactly — no drift between calculation and citation.
+
+### 18.1 Bug Found: Screening Block Built From Stale Facts
+
+**What happened:** the turn that supplies the *second* required fact (completing the screening — e.g., stating income after household size was already known) records the fact via tool call, but the `<eligibility_screening>` prompt block for that same turn was built from facts *before* the update — so the very reply meant to report the screening would show "not enough information yet" instead.
+
+**Fix:** recompute the screening block after the fact update completes, and pass the updated block through to the model via the `tool_result` for that turn's follow-up call, rather than building it once before the tool call resolves.
+
+**Verified:** live conversations confirmed the screening now correctly appears in the same turn that completes the required facts, not one turn late.
+
+### 18.2 Regression Found and Fixed: Ambiguity Handling vs. Eligibility Reporting Priority Conflict
+
+**What happened:** after wiring in `<eligibility_screening>`, a full 12-persona regression pass found Persona 03 (Ambiguous Input) had regressed. The documented behavior — leading with specific clarification questions on an ambiguous "no" — broke down once eligibility screening was ready to report. Across 4 fresh samples: 2/4 skipped clarification entirely and delivered screening figures immediately; 2/4 asked for clarification only after already stating the figures, using different wording than the documented pattern.
+
+**Root cause, confirmed via isolation, not assumption:** monkeypatched the screening-block formatter to always return "not enough information yet" (simulating pre-eligibility-work behavior) and reran the same scenario 3 times — correct clarification-first behavior was restored 3/3. With the real block active, the regression reproduced 4/4. This confirms causation: the new block's "ready to report" pull was competing with, and winning over, the existing ambiguity-handling instruction for priority within the same turn.
+
+**Fix:** added an explicit system-prompt instruction establishing priority order — resolve conversational ambiguity in the current message before restating or leading with eligibility screening figures. If the current turn is ambiguous, ask for clarification using the specific-interpretations pattern first; screening figures can be restated once the ambiguity resolves on a later turn.
+
+**Re-verified, 4 fresh samples:** leads with clarification (not figures) 4/4, offers specific named interpretations 4/4, zero screening figures in the clarification turn 4/4, follow-up turn correctly reports figures once clarified, non-ambiguous sanity check confirms the fix doesn't over-suppress the screening block on turns where it should fire normally.
+
+**General principle:** when adding a new "always report X when ready" instruction to a system prompt, explicitly check it against existing conversational guardrails (ambiguity handling, crisis detection, injection resistance) for same-turn priority conflicts — don't assume they compose safely by default just because each was independently correct before being combined.
+
+### 18.3 Open Item: Possible Ungrounded Assertion in Persona 02 (Not Yet Resolved)
+
+The same 12-persona regression pass surfaced something separate from the Persona 03 regression, not caused by the eligibility work and not yet investigated to root cause: in 2 of 3 fresh samples of Persona 02 (Household Composition Gap), the agent asserted a specific claim about household concept rules ("comes down to whether you buy and prepare food together, not blood relation") that does not appear anywhere in the knowledge base. The claim happens to be true in the real world, but it's ungrounded per this project's citation discipline — exactly the fabrication shape Persona 02 exists to catch, just not caught this time in 2 of 3 samples (the third sample avoided it cleanly).
+
+This is being tracked as an open, separate investigation rather than folded into the eligibility/Persona 03 fix, since the cause is unrelated and unconfirmed. Documented here rather than silently left out, consistent with this project's approach to known limitations (see Section 17.1) — an honest open item is preferable to an undocumented gap.

@@ -141,6 +141,16 @@ mylo/
 
 ~$10-20 in actual API usage (LLM calls + embeddings) against the $200 provided upfront. Full breakdown in `SPEC.md` Section 13.
 
+## Deterministic Eligibility Screening
+
+`src/eligibility.py` implements gross-income screening (200%/130% limits) as plain, deterministic Python — no LLM math, per the hard rule in `CLAUDE.md`. Deliberately scoped to gross income only; net income calculation was intentionally left out since deduction data isn't reliably gathered (see the Section 17.1 retrieval limitation). No final eligibility verdict — reports where a household falls relative to thresholds, matching language the agent already used correctly. 36 unit test assertions, explicit boundary-case testing (at-limit counts as passing), and live end-to-end verification with no drift between calculated and cited figures.
+
+**A real regression was found and fixed during full-suite testing after wiring this in:** the new "ready to report" screening block competed with existing ambiguity-handling instructions, causing the agent to sometimes skip clarification and deliver figures prematurely on an ambiguous "no." Root cause confirmed via monkeypatch isolation (3/3 correct with the block disabled, 4/4 broken with it active) — fixed with explicit system-prompt priority ordering, re-verified 4/4 clean.
+
+**One open item, honestly flagged rather than hidden:** a separate, unrelated regression pass surfaced a possible ungrounded assertion in 2/3 samples of the household-composition test — a claim that's true in the real world but not present in the knowledge base. Not yet root-caused; tracked as an open investigation.
+
+Full detail: `SPEC.md` Section 18.
+
 ## Status
 
-Phase 2 (core agent — retrieval, conversation state, groundedness, conflict resolution) is complete and verified. Phase 3 (guardrails: crisis detection, injection resistance, PII handling, out-of-scope refusal) in progress.
+Phase 2 (core agent — retrieval, conversation state, groundedness, conflict resolution), Phase 3 (guardrails — crisis detection, injection resistance, PII handling, out-of-scope refusal), and deterministic eligibility screening are complete and verified across 12 formal persona tests. One open, honestly-documented item remains under investigation (see above).

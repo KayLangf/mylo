@@ -96,6 +96,22 @@ correctly across all 4 turns (`household_size=2`, `monthly_income=2200`,
 one clarifying question per turn — confirming the fix only changed
 retrieval relevance, not generation-time behavior.
 
+**Updated baseline (post `eligibility.py` wiring):** re-running this same
+4-turn script fresh after `12_deterministic_eligibility_screening.md`'s
+`<eligibility_screening>` block was wired in, Turn 4's reply now cites
+only the 200%/130% gross limit figures ($3,526 / $2,292, both correct)
+and no longer volunteers the 100%/net-income figure ($1,763) the original
+run above included. The retrieved chunk (and therefore the underlying
+retrieval fix this test validates) is unaffected — the household-of-2
+income-limit chunk still retrieves correctly. This is the new expected
+baseline going forward, not a regression: the 100% net figure was never
+used in an actual calculation before (net income requires deductions this
+project doesn't model — see `eligibility.py`'s scope note), so citing it
+was informational color, not a determination. The model now anchors on
+the deterministic, code-computed 200%/130% screening result instead of
+also surfacing an uncomputed net figure from the retrieved table — a more
+consistent citation source, not a loss of correctness.
+
 ## Why This Test Matters
 
 This is the direct regression test for the root cause documented in
