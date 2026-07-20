@@ -4,6 +4,11 @@ A proof-of-concept text-based AI agent that helps a resident understand whether 
 
 Mylo holds a natural, multi-turn conversation, grounds its answers in a curated knowledge base of real NC DHHS public eligibility documents, uses deterministic logic for actual eligibility math, and is built to fail honestly rather than fabricate confidently when it doesn't know something.
 
+## Access Mylo Directly
+https://mylo-eta.vercel.app/
+
+Request password for access 😊.
+
 ## Quick Start
 
 ```bash
