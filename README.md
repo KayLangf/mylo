@@ -19,6 +19,15 @@ python src/cli.py      # start a conversation
 
 Requires an Anthropic API key and an embeddings API key (see `.env.example`).
 
+**Web UI (local):**
+
+```bash
+pip install fastapi uvicorn
+uvicorn api.index:app --reload   # serves the API; open public/index.html or deploy for the full app
+```
+
+**Deploy to Vercel:** `vercel deploy` from the project root (`vercel.json` wires `public/` as the static frontend and `api/index.py` as a Python serverless function). See "Web UI" below for the architecture this required.
+
 ## What Makes This Interesting: A Real Source-Authority Conflict
 
 While sourcing knowledge base documents by hand (a deliberate choice — see Tradeoffs below), we found something we weren't looking for: NC DHHS currently hosts **two official versions of the same policy manual document** — "FNS 360: Determining Benefit Levels" — at the same authoritative domain, with materially different numbers:
@@ -48,7 +57,7 @@ User input → Session (per-conversation state)
 - **LLM:** Claude (Anthropic API)
 - **Embeddings:** OpenAI `text-embedding-3-small`
 - **Vector store:** ChromaDB (local, file-based — no hosted infra needed at this scale)
-- **Interface:** CLI
+- **Interface:** CLI (original, committed) + web UI (added post-lock — see "Web UI" below)
 
 See `SPEC.md` Section 2 for full reasoning behind each choice.
 
@@ -110,6 +119,21 @@ Full reasoning for each in `SPEC.md` Sections 7 and 11. Summary:
 | Rate limiting, SMS channel | Documented as real future needs, not built |
 | Comparative model benchmarking | Out of scope for a POC — a single model is selected and used |
 
+## Web UI (Post-Lock Deviation)
+
+`SPEC.md` was locked with CLI as the committed interface (Section 2) and a web frontend explicitly named as future work, not committed scope (Section 7). That was deliberately reopened: a web UI was added (`api/index.py`, `public/index.html`, `vercel.json`), deployed as a Vercel Python serverless function, without removing or changing the CLI — both interfaces now share the same `agent.py`/`retrieval.py`/`eligibility.py`/`guardrails.py` logic unmodified.
+
+Two real architecture changes were forced by the deployment target, not stylistic choices:
+
+- **Session state now round-trips through the client instead of living in server memory.** Vercel functions are stateless between invocations, so the original in-memory `Session`-per-process design (`SPEC.md` Section 10) can't hold across requests. `agent.Session` gained `to_dict()`/`from_dict()`; the API rebuilds a fresh `Session` from whatever state the client sends each turn and hands the updated state back for the client to resend next time. There's no server-side session store at all, which makes cross-session leakage structurally impossible rather than tested-and-absent — a stronger version of the same guarantee Section 10 was written around, achieved differently than it originally assumed.
+- **ChromaDB's on-disk store is copied to `/tmp` on cold start when deployed**, since Vercel's filesystem is read-only outside `/tmp` and `PersistentClient`/SQLite need write access to open the store even for read-only queries. The store is ~2MB, so this is cheap and only triggers in the deployed environment — local/CLI behavior is unchanged.
+
+**Access is gated by a single shared password** (`MYLO_ACCESS_PASSWORD`), since a public URL with no rate limiting (Section 7 cuts that explicitly) would otherwise let anyone run up the Anthropic/OpenAI bill. Every `/api/*` route requires an `X-Mylo-Password` header, checked server-side with a constant-time comparison; missing the env var entirely fails closed (rejects everything) rather than open. The frontend shows a password gate before loading the chat UI and stores the password in `sessionStorage` only (cleared on tab close) — a demo-appropriate deterrent, not real per-user auth or a defense against a determined/targeted attacker.
+
+**Deployed and live-verified:** `https://mylo-eta.vercel.app`. Beyond the earlier local `uvicorn` testing, the actual Vercel deployment was verified directly against production — password gate (no/wrong password → 401, correct → 200), a real multi-turn conversation exercising retrieval, fact extraction, and eligibility screening (confirms the bundled ~2MB ChromaDB store loads correctly from Vercel's read-only filesystem via the write-probe fallback in `retrieval._resolve_chroma_dir()`), the crisis guardrail, and that a fresh session carries zero state from a prior one. One deployment bug was caught and fixed in the process: the original `/tmp`-copy logic gated on Vercel's `VERCEL=1` env var, which turned out to require a per-project dashboard opt-in most people would never enable — replaced with a real write-probe (attempt a write, catch the failure) that needs no platform-specific detection at all. **The browser gap above was closed, and it found a real bug.** Installed Playwright locally and drove the actual production URL end-to-end: on first load, clicking "Unlock" after entering the correct password visibly did nothing — the `/api/greeting` call was succeeding (200), but the gate stayed on screen. Root cause: `#gate` and `.app` both set an explicit `display: flex` in the stylesheet, which — because author-stylesheet rules always beat user-agent-stylesheet rules at equal specificity — silently overrides the browser's default `[hidden] { display: none }` rule. Toggling the `hidden` property in JS was updating the DOM attribute correctly the whole time; it just had no visual effect. Fixed with one rule (`[hidden] { display: none !important; }`), redeployed, and re-verified with the same Playwright script: password gate now correctly hides after a successful unlock, and a full chat round-trip (greeting bubble → typed message → grounded reply bubble) renders correctly in an actual browser, not just via direct API calls.
+
+Full detail: `CLAUDE.md` Learned Rules.
+
 ## What I'd Do With More Time
 
 - Automated ingestion **with** proper source-authority controls (pinned versioning per customer, not naive "always fetch latest")
@@ -130,6 +154,7 @@ mylo/
 ├── SPEC.md              # full architecture, tradeoffs, and verification log
 ├── CLAUDE.md             # build rules and learned corrections
 ├── requirements.txt
+├── vercel.json           # web deployment config (see "Web UI" section)
 ├── data/knowledge_base/  # 9 NC DHHS source documents
 ├── src/
 │   ├── ingest.py
@@ -138,13 +163,15 @@ mylo/
 │   ├── guardrails.py
 │   ├── agent.py
 │   └── cli.py
+├── api/index.py          # FastAPI web API (Vercel Python serverless function)
+├── public/index.html     # static chat frontend (vanilla JS, no build step)
 ├── tests/personas/
 └── docs/tradeoffs.md
 ```
 
 ## Estimated Cost
 
-~$10-20 in actual API usage (LLM calls + embeddings) against the $200 provided upfront. Full breakdown in `SPEC.md` Section 13.
+~$10-20 in actual API usage (LLM calls + embeddings) against the $200 provided upfront. Full breakdown in `SPEC.md` Section 13. Vercel hosting for the web UI is $0 at this scale (Hobby tier covers a single low-traffic Python function + static site).
 
 ## Deterministic Eligibility Screening
 
@@ -158,4 +185,4 @@ Full detail: `SPEC.md` Section 18.
 
 ## Status
 
-Phase 2 (core agent — retrieval, conversation state, groundedness, conflict resolution), Phase 3 (guardrails — crisis detection, injection resistance, PII handling, out-of-scope refusal), and deterministic eligibility screening are complete and verified across 12 formal persona tests. One open, honestly-documented item remains under investigation (see above).
+Phase 2 (core agent — retrieval, conversation state, groundedness, conflict resolution), Phase 3 (guardrails — crisis detection, injection resistance, PII handling, out-of-scope refusal), and deterministic eligibility screening are complete and verified across 12 formal persona tests. One open, honestly-documented item remains under investigation (see above). A web UI was added post-lock (see "Web UI" section), deployed to `https://mylo-eta.vercel.app`, and verified live end-to-end at the API level; a real-browser click-through is the one remaining unverified layer.
