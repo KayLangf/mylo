@@ -65,9 +65,41 @@ def _get_collection():
             if _collection is None:
                 import chromadb
 
-                client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+                client = chromadb.PersistentClient(path=str(_resolve_chroma_dir()))
                 _collection = client.get_collection(COLLECTION_NAME)
     return _collection
+
+
+def _resolve_chroma_dir():
+    """Return a writable path to the persisted collection. On Vercel the
+    deployment bundle (including CHROMA_DIR) is read-only outside /tmp,
+    and PersistentClient/SQLite need to open the store for write (WAL/
+    journal files) even for read-only queries. The store is small
+    (~2MB) and read-only in practice at request time, so a one-time copy
+    into a writable temp dir per cold start is cheap and safe.
+
+    Detects writability with a real write probe rather than checking an
+    env var like Vercel's own `VERCEL=1` (opt-in per-project, easy to
+    forget to enable) or `os.access` (reports POSIX permission bits,
+    which can say "writable" even under a read-only bind mount — the
+    exact case this needs to catch). This also means the same code path
+    works unmodified on any other read-only-filesystem host, not just
+    Vercel specifically."""
+    probe = CHROMA_DIR / ".write_test"
+    try:
+        probe.touch()
+        probe.unlink()
+        return CHROMA_DIR
+    except OSError:
+        pass
+
+    import shutil
+    import tempfile
+
+    tmp_dir = Path(tempfile.gettempdir()) / "mylo_chroma_db"
+    if not tmp_dir.exists():
+        shutil.copytree(CHROMA_DIR, tmp_dir)
+    return tmp_dir
 
 
 def _to_chunk(text, metadata, distance):

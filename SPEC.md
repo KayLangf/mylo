@@ -49,6 +49,8 @@ mylo/
     └── tradeoffs.md             # what was cut and why (also summarized in README)
 ```
 
+**Post-lock deviation (see `docs/tradeoffs.md`):** a web UI (`api/`, `public/`, `vercel.json`) was added after this file was locked — CLI remains the structure described above and still works unchanged; the web layer is additive.
+
 ## 5. Core Agent Behavior (Happy Path)
 
 1. Agent greets user, asks what they need help with

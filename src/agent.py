@@ -174,6 +174,28 @@ class Session:
         self.history = []  # list of {"role": "user"/"assistant", "content": ...}
         self.facts = {}
 
+    def to_dict(self):
+        """Serialize to plain JSON-safe data (history/facts are already
+        plain strings/dicts). Used by the web API to hand session state
+        back to the client between turns instead of holding it in server
+        memory — see SPEC.md Section 10: serverless invocations are
+        stateless, so state must round-trip through the caller rather than
+        live in a process-level store."""
+        return {"session_id": self.session_id, "history": self.history, "facts": self.facts}
+
+    @classmethod
+    def from_dict(cls, data):
+        """Rebuild a Session from a dict previously produced by to_dict().
+        Always constructs a fresh instance — never mutates or reuses a
+        shared object — so each request gets its own isolated Session,
+        preserving the no-shared-mutable-state guarantee even though the
+        data now travels through the client instead of server memory."""
+        data = data or {}
+        session = cls(session_id=data.get("session_id"))
+        session.history = list(data.get("history", []))
+        session.facts = dict(data.get("facts", {}))
+        return session
+
 
 def _format_evidence(chunks):
     if not chunks:

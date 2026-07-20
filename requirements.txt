@@ -2,3 +2,5 @@ anthropic
 chromadb
 openai
 python-dotenv
+fastapi
+pydantic
