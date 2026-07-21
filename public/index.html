@@ -68,7 +68,12 @@
     font-size: 0.8rem;
     color: var(--muted);
   }
-  #export-btn {
+  .header-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+  #export-btn, #clear-btn {
     background: none;
     border: 1px solid var(--border);
     color: var(--text);
@@ -77,7 +82,8 @@
     font-size: 0.8rem;
     cursor: pointer;
   }
-  #export-btn:hover { background: var(--agent-bubble); }
+  #export-btn:hover, #clear-btn:hover { background: var(--agent-bubble); }
+  #export-btn:disabled, #clear-btn:disabled { opacity: 0.5; cursor: default; }
   main {
     flex: 1;
     overflow-y: auto;
@@ -230,7 +236,10 @@
       <h1>Mylo</h1>
       <p>NC FNS (SNAP) eligibility assistant — not a real application or determination</p>
     </div>
-    <button id="export-btn" type="button">Export transcript</button>
+    <div class="header-actions">
+      <button id="clear-btn" type="button">Clear session</button>
+      <button id="export-btn" type="button">Export transcript</button>
+    </div>
   </header>
   <main id="log" aria-live="polite"></main>
   <div class="char-count" id="char-count"></div>
@@ -255,6 +264,7 @@
   const sendBtn = document.getElementById("send-btn");
   const charCount = document.getElementById("char-count");
   const exportBtn = document.getElementById("export-btn");
+  const clearBtn = document.getElementById("clear-btn");
 
   // Session state lives only in this tab's memory and is resent with
   // every request — the API is stateless (see api/index.py). Nothing
@@ -262,6 +272,7 @@
   // single-session-only, no-cross-session-leakage design.
   let session = { session_id: null, history: [], facts: {} };
   let maxInputChars = 2000;
+  let greetingText = "";
 
   // The access password gates every paid API route (see
   // api/index.py's require_password dependency) so the deployed URL
@@ -305,9 +316,10 @@
     sessionStorage.setItem("mylo_pw", password);
     const data = await res.json();
     maxInputChars = data.max_input_chars || maxInputChars;
+    greetingText = data.greeting;
     showApp();
     if (!log.hasChildNodes()) {
-      addBubble("agent", data.greeting, false);
+      addBubble("agent", greetingText, false);
       updateCharCount();
     }
   }
@@ -370,6 +382,7 @@
     input.style.height = "auto";
     updateCharCount();
     sendBtn.disabled = true;
+    clearBtn.disabled = true;
     const pendingBubble = addTypingBubble();
 
     try {
@@ -393,6 +406,7 @@
       pendingBubble.classList.remove("pending");
     } finally {
       sendBtn.disabled = false;
+      clearBtn.disabled = false;
       input.focus();
     }
   });
@@ -419,6 +433,21 @@
     } catch (err) {
       alert("Couldn't export the transcript right now.");
     }
+  });
+
+  clearBtn.addEventListener("click", () => {
+    if (session.history.length && !confirm("Clear this conversation? This can't be undone — export it first if you want to keep it.")) {
+      return;
+    }
+    // Resets conversation state only, not the access password —
+    // clearing a session and being logged in are separate concerns
+    // (see the password-gate comment above). session_id: null tells
+    // the server to mint a fresh id on the next turn, same as a
+    // brand-new tab would get.
+    session = { session_id: null, history: [], facts: {} };
+    log.innerHTML = "";
+    if (greetingText) addBubble("agent", greetingText, false);
+    updateCharCount();
   });
 
   if (accessPassword) {
