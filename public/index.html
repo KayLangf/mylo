@@ -112,6 +112,19 @@
     color: var(--text);
     border-bottom-left-radius: 4px;
   }
+  .bubble.agent ul, .bubble.agent ol {
+    margin: 0.3rem 0;
+    padding-left: 1.3rem;
+  }
+  .bubble.agent li { margin: 0.15rem 0; }
+  .bubble.agent strong { font-weight: 700; }
+  .bubble.agent code {
+    background: rgba(127, 127, 127, 0.18);
+    padding: 0.1rem 0.3rem;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
   .bubble.pending { padding: 0.8rem 1rem; }
   .typing-dots {
     display: flex;
@@ -331,10 +344,70 @@
     unlock(password);
   });
 
+  // Agent replies are LLM-generated text rendered as HTML (for markdown
+  // formatting), not plain text — so unlike the rest of this app, this
+  // path is a real XSS surface: a sufficiently adversarial conversation
+  // could try to get the model to emit literal HTML/script content in
+  // its reply. escapeHtml() runs first and unconditionally on the whole
+  // raw string, before any markdown pattern is matched, so `<`, `>`, and
+  // `&` are always turned into entities before anything else touches the
+  // text. Only a fixed, hardcoded set of tags (<strong>, <em>, <code>,
+  // <ul>/<ol>/<li>, <br>) is ever introduced afterward, and never from
+  // attacker-controlled attribute values — so no raw tag can pass
+  // through regardless of what the model outputs. User-typed messages
+  // still go through textContent below, untouched by any of this.
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function inlineMarkdown(str) {
+    return str
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`([^`]+?)`/g, "<code>$1</code>")
+      .replace(/(^|[^*])\*(?!\*)([^*]+?)\*(?!\*)/g, "$1<em>$2</em>");
+  }
+
+  function renderMarkdown(text) {
+    const lines = escapeHtml(text).split("\n");
+    let html = "";
+    let listTag = null;
+    const closeList = () => {
+      if (listTag) { html += "</" + listTag + ">"; listTag = null; }
+    };
+    for (const line of lines) {
+      const bullet = line.match(/^\s*[-*]\s+(.*)/);
+      const numbered = line.match(/^\s*\d+\.\s+(.*)/);
+      if (bullet) {
+        if (listTag !== "ul") { closeList(); html += "<ul>"; listTag = "ul"; }
+        html += "<li>" + inlineMarkdown(bullet[1]) + "</li>";
+      } else if (numbered) {
+        if (listTag !== "ol") { closeList(); html += "<ol>"; listTag = "ol"; }
+        html += "<li>" + inlineMarkdown(numbered[1]) + "</li>";
+      } else if (line.trim() === "") {
+        closeList();
+        html += "<br>";
+      } else {
+        closeList();
+        html += inlineMarkdown(line) + "<br>";
+      }
+    }
+    closeList();
+    return html;
+  }
+
   function addBubble(role, text, pending) {
     const el = document.createElement("div");
     el.className = "bubble " + role + (pending ? " pending" : "");
-    el.textContent = text;
+    if (role === "agent") {
+      el.innerHTML = renderMarkdown(text);
+    } else {
+      el.textContent = text;
+    }
     log.appendChild(el);
     log.scrollTop = log.scrollHeight;
     return el;
@@ -399,10 +472,10 @@
       if (!res.ok) throw new Error("Request failed: " + res.status);
       const data = await res.json();
       session = data.session;
-      pendingBubble.textContent = data.reply;
+      pendingBubble.innerHTML = renderMarkdown(data.reply);
       pendingBubble.classList.remove("pending");
     } catch (err) {
-      pendingBubble.textContent = "Something went wrong reaching Mylo — please try again.";
+      pendingBubble.innerHTML = renderMarkdown("Something went wrong reaching Mylo — please try again.");
       pendingBubble.classList.remove("pending");
     } finally {
       sendBtn.disabled = false;
